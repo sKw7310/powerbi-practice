@@ -8,6 +8,7 @@ on:
       - '**.pbip'
       - '**.Report/**'
       - '**.SemanticModel/**'
+  workflow_dispatch:
 
 jobs:
   deploy-to-dev:
@@ -43,7 +44,13 @@ jobs:
           echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
           echo "✅ Access token retrieved"
 
-      # ── Step 2: Find PBIP files ───────────────────────────────────────────
+      # ── Step 2: Debug — print folder structure ────────────────────────────
+      - name: Show PBIP folder structure
+        run: |
+          echo "📁 Repository structure:"
+          find . -not -path "*/.git/*" -type f | sort | head -60
+
+      # ── Step 3: Find PBIP files ───────────────────────────────────────────
       - name: Find PBIP files
         id: find_pbip
         run: |
@@ -58,8 +65,8 @@ jobs:
           echo "$PBIP_FILES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      # ── Step 3: Deploy using Fabric REST API (supports PBIP/TMDL) ────────
-      - name: Deploy to sales_dev via Fabric API
+      # ── Step 4: Deploy Semantic Model ─────────────────────────────────────
+      - name: Deploy Semantic Model to sales_dev
         run: |
           ACCESS_TOKEN="${{ steps.get_token.outputs.ACCESS_TOKEN }}"
           WORKSPACE_ID="${{ secrets.PBI_DEV_WORKSPACE_ID }}"
@@ -70,108 +77,51 @@ jobs:
             REPORT_NAME=$(basename "$PBIP_FILE" .pbip)
             PBIP_DIR=$(dirname "$PBIP_FILE")
             MODEL_DIR="$PBIP_DIR/$REPORT_NAME.SemanticModel"
-            REPORT_DIR="$PBIP_DIR/$REPORT_NAME.Report"
 
             echo ""
-            echo "========== $REPORT_NAME =========="
+            echo "========== Semantic Model: $REPORT_NAME =========="
 
-            # ── Deploy Semantic Model ─────────────────────────────────────
-            if [ -d "$MODEL_DIR" ]; then
-              echo "📊 Deploying Semantic Model..."
-
-              # Read model.tmdl or database.tmdl for the model definition
-              # Encode entire SemanticModel folder as base64 parts for Fabric API
-              MODEL_DEF=$(find "$MODEL_DIR/definition" -type f | sort | while read f; do
-                REL_PATH=${f#$MODEL_DIR/definition/}
-                CONTENT=$(base64 -w 0 "$f")
-                echo "{\"path\":\"$REL_PATH\",\"payload\":\"$CONTENT\",\"payloadType\":\"InlineBase64\"}"
-              done | python3 -c "
-          import sys
-          parts = [line.strip() for line in sys.stdin if line.strip()]
-          import json
-          result = []
-          for p in parts:
-              result.append(json.loads(p))
-          print(json.dumps(result))
-          ")
-
-              # Check if semantic model already exists
-              EXISTING=$(curl -s \
-                "https://api.powerbi.com/v1.0/myorg/groups/$WORKSPACE_ID/datasets" \
-                -H "Authorization: Bearer $ACCESS_TOKEN")
-
-              EXISTING_ID=$(echo $EXISTING | python3 -c "
-          import sys,json
-          data = json.load(sys.stdin)
-          items = data.get('value', [])
-          match = [i for i in items if i.get('name','') == '$REPORT_NAME']
-          print(match[0]['id'] if match else '')
-          " 2>/dev/null)
-
-              if [ -n "$EXISTING_ID" ]; then
-                echo "   → Semantic model exists (ID: $EXISTING_ID) — updating via Fabric API"
-
-                # Update existing semantic model using Fabric updateDefinition API
-                PAYLOAD=$(python3 -c "
-          import json
-          parts = $MODEL_DEF
-          print(json.dumps({'definition': {'parts': parts}}))
-          ")
-                RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-                  "https://api.fabric.microsoft.com/v1/workspaces/$WORKSPACE_ID/semanticModels/$EXISTING_ID/updateDefinition" \
-                  -H "Authorization: Bearer $ACCESS_TOKEN" \
-                  -H "Content-Type: application/json" \
-                  -d "$PAYLOAD")
-              else
-                echo "   → Creating new semantic model via Fabric API"
-
-                # Create new semantic model
-                PAYLOAD=$(python3 -c "
-          import json
-          parts = $MODEL_DEF
-          print(json.dumps({
-              'displayName': '$REPORT_NAME',
-              'definition': {'parts': parts}
-          }))
-          ")
-                RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-                  "https://api.fabric.microsoft.com/v1/workspaces/$WORKSPACE_ID/semanticModels" \
-                  -H "Authorization: Bearer $ACCESS_TOKEN" \
-                  -H "Content-Type: application/json" \
-                  -d "$PAYLOAD")
-              fi
-
-              HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-              BODY=$(echo "$RESPONSE" | head -1)
-
-              if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] || [ "$HTTP_CODE" = "202" ]; then
-                echo "   ✅ Semantic model deployed (HTTP $HTTP_CODE)"
-              else
-                echo "   ❌ Semantic model failed (HTTP $HTTP_CODE): $BODY"
-                exit 1
-              fi
+            if [ ! -d "$MODEL_DIR" ]; then
+              echo "⚠️  No SemanticModel folder found at: $MODEL_DIR"
+              continue
             fi
 
-            # ── Deploy Report ─────────────────────────────────────────────
-            if [ -d "$REPORT_DIR" ]; then
-              echo "📄 Deploying Report..."
+            echo "📁 SemanticModel contents:"
+            find "$MODEL_DIR" -type f | sort
 
-              REPORT_DEF=$(find "$REPORT_DIR/definition" -type f 2>/dev/null | sort | while read f; do
-                REL_PATH=${f#$REPORT_DIR/definition/}
-                CONTENT=$(base64 -w 0 "$f")
-                echo "{\"path\":\"$REL_PATH\",\"payload\":\"$CONTENT\",\"payloadType\":\"InlineBase64\"}"
-              done | python3 -c "
-          import sys, json
-          parts = [json.loads(line.strip()) for line in sys.stdin if line.strip()]
+            # Build parts — paths relative to SemanticModel root
+            PARTS_JSON=$(python3 - "$MODEL_DIR" << 'PYEOF'
+          import os, base64, json, sys
+
+          model_dir = sys.argv[1]
+          parts = []
+
+          for root, dirs, files in os.walk(model_dir):
+              dirs[:] = sorted([d for d in dirs if not d.startswith('.')])
+              for fname in sorted(files):
+                  if fname.startswith('.'):
+                      continue
+                  fpath = os.path.join(root, fname)
+                  rel_path = os.path.relpath(fpath, model_dir).replace('\\', '/')
+                  with open(fpath, 'rb') as f:
+                      content = base64.b64encode(f.read()).decode('utf-8')
+                  parts.append({
+                      "path": rel_path,
+                      "payload": content,
+                      "payloadType": "InlineBase64"
+                  })
+                  sys.stderr.write(f"  Added: {rel_path}\n")
+
           print(json.dumps(parts))
-          ")
+          PYEOF
+          )
 
-              # Check if report already exists
-              EXISTING_REPORTS=$(curl -s \
-                "https://api.powerbi.com/v1.0/myorg/groups/$WORKSPACE_ID/reports" \
-                -H "Authorization: Bearer $ACCESS_TOKEN")
+            # Check if semantic model already exists
+            EXISTING=$(curl -s \
+              "https://api.powerbi.com/v1.0/myorg/groups/$WORKSPACE_ID/datasets" \
+              -H "Authorization: Bearer $ACCESS_TOKEN")
 
-              EXISTING_REPORT_ID=$(echo $EXISTING_REPORTS | python3 -c "
+            EXISTING_ID=$(echo "$EXISTING" | python3 -c "
           import sys,json
           data = json.load(sys.stdin)
           items = data.get('value', [])
@@ -179,49 +129,147 @@ jobs:
           print(match[0]['id'] if match else '')
           " 2>/dev/null)
 
-              if [ -n "$EXISTING_REPORT_ID" ]; then
-                echo "   → Report exists (ID: $EXISTING_REPORT_ID) — updating"
-                PAYLOAD=$(python3 -c "
-          import json
-          parts = $REPORT_DEF
+            if [ -n "$EXISTING_ID" ]; then
+              echo "→ Updating existing semantic model (ID: $EXISTING_ID)"
+              PAYLOAD=$(echo "$PARTS_JSON" | python3 -c "
+          import json,sys
+          parts = json.loads(sys.stdin.read())
           print(json.dumps({'definition': {'parts': parts}}))
           ")
-                RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-                  "https://api.fabric.microsoft.com/v1/workspaces/$WORKSPACE_ID/reports/$EXISTING_REPORT_ID/updateDefinition" \
-                  -H "Authorization: Bearer $ACCESS_TOKEN" \
-                  -H "Content-Type: application/json" \
-                  -d "$PAYLOAD")
-              else
-                echo "   → Creating new report"
-                PAYLOAD=$(python3 -c "
-          import json
-          parts = $REPORT_DEF
-          print(json.dumps({
-              'displayName': '$REPORT_NAME',
-              'definition': {'parts': parts}
-          }))
+              RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+                "https://api.fabric.microsoft.com/v1/workspaces/$WORKSPACE_ID/semanticModels/$EXISTING_ID/updateDefinition" \
+                -H "Authorization: Bearer $ACCESS_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "$PAYLOAD")
+            else
+              echo "→ Creating new semantic model"
+              PAYLOAD=$(echo "$PARTS_JSON" | python3 -c "
+          import json,sys
+          parts = json.loads(sys.stdin.read())
+          print(json.dumps({'displayName': '$REPORT_NAME', 'definition': {'parts': parts}}))
           ")
-                RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-                  "https://api.fabric.microsoft.com/v1/workspaces/$WORKSPACE_ID/reports" \
-                  -H "Authorization: Bearer $ACCESS_TOKEN" \
-                  -H "Content-Type: application/json" \
-                  -d "$PAYLOAD")
-              fi
+              RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+                "https://api.fabric.microsoft.com/v1/workspaces/$WORKSPACE_ID/semanticModels" \
+                -H "Authorization: Bearer $ACCESS_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "$PAYLOAD")
+            fi
 
-              HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-              BODY=$(echo "$RESPONSE" | head -1)
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            BODY=$(echo "$RESPONSE" | head -1)
 
-              if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] || [ "$HTTP_CODE" = "202" ]; then
-                echo "   ✅ Report deployed (HTTP $HTTP_CODE)"
-              else
-                echo "   ❌ Report failed (HTTP $HTTP_CODE): $BODY"
-                exit 1
-              fi
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] || [ "$HTTP_CODE" = "202" ]; then
+              echo "✅ Semantic model deployed (HTTP $HTTP_CODE)"
+            else
+              echo "❌ Semantic model failed (HTTP $HTTP_CODE): $BODY"
+              exit 1
             fi
 
           done <<< "${{ steps.find_pbip.outputs.PBIP_FILES }}"
 
-      # ── Step 4: Summary ───────────────────────────────────────────────────
+      # ── Step 5: Deploy Report ──────────────────────────────────────────────
+      - name: Deploy Report to sales_dev
+        run: |
+          ACCESS_TOKEN="${{ steps.get_token.outputs.ACCESS_TOKEN }}"
+          WORKSPACE_ID="${{ secrets.PBI_DEV_WORKSPACE_ID }}"
+
+          while IFS= read -r PBIP_FILE; do
+            [ -z "$PBIP_FILE" ] && continue
+
+            REPORT_NAME=$(basename "$PBIP_FILE" .pbip)
+            PBIP_DIR=$(dirname "$PBIP_FILE")
+            REPORT_DIR="$PBIP_DIR/$REPORT_NAME.Report"
+
+            echo ""
+            echo "========== Report: $REPORT_NAME =========="
+
+            if [ ! -d "$REPORT_DIR" ]; then
+              echo "⚠️  No Report folder found at: $REPORT_DIR"
+              continue
+            fi
+
+            echo "📁 Report contents:"
+            find "$REPORT_DIR" -type f | sort
+
+            # Build parts — paths relative to Report root
+            PARTS_JSON=$(python3 - "$REPORT_DIR" << 'PYEOF'
+          import os, base64, json, sys
+
+          report_dir = sys.argv[1]
+          parts = []
+
+          for root, dirs, files in os.walk(report_dir):
+              dirs[:] = sorted([d for d in dirs if not d.startswith('.')])
+              for fname in sorted(files):
+                  if fname.startswith('.'):
+                      continue
+                  fpath = os.path.join(root, fname)
+                  rel_path = os.path.relpath(fpath, report_dir).replace('\\', '/')
+                  with open(fpath, 'rb') as f:
+                      content = base64.b64encode(f.read()).decode('utf-8')
+                  parts.append({
+                      "path": rel_path,
+                      "payload": content,
+                      "payloadType": "InlineBase64"
+                  })
+                  sys.stderr.write(f"  Added: {rel_path}\n")
+
+          print(json.dumps(parts))
+          PYEOF
+          )
+
+            # Check if report already exists
+            EXISTING_REPORTS=$(curl -s \
+              "https://api.powerbi.com/v1.0/myorg/groups/$WORKSPACE_ID/reports" \
+              -H "Authorization: Bearer $ACCESS_TOKEN")
+
+            EXISTING_REPORT_ID=$(echo "$EXISTING_REPORTS" | python3 -c "
+          import sys,json
+          data = json.load(sys.stdin)
+          items = data.get('value', [])
+          match = [i for i in items if i.get('name','') == '$REPORT_NAME']
+          print(match[0]['id'] if match else '')
+          " 2>/dev/null)
+
+            if [ -n "$EXISTING_REPORT_ID" ]; then
+              echo "→ Updating existing report (ID: $EXISTING_REPORT_ID)"
+              PAYLOAD=$(echo "$PARTS_JSON" | python3 -c "
+          import json,sys
+          parts = json.loads(sys.stdin.read())
+          print(json.dumps({'definition': {'parts': parts}}))
+          ")
+              RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+                "https://api.fabric.microsoft.com/v1/workspaces/$WORKSPACE_ID/reports/$EXISTING_REPORT_ID/updateDefinition" \
+                -H "Authorization: Bearer $ACCESS_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "$PAYLOAD")
+            else
+              echo "→ Creating new report"
+              PAYLOAD=$(echo "$PARTS_JSON" | python3 -c "
+          import json,sys
+          parts = json.loads(sys.stdin.read())
+          print(json.dumps({'displayName': '$REPORT_NAME', 'definition': {'parts': parts}}))
+          ")
+              RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+                "https://api.fabric.microsoft.com/v1/workspaces/$WORKSPACE_ID/reports" \
+                -H "Authorization: Bearer $ACCESS_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "$PAYLOAD")
+            fi
+
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            BODY=$(echo "$RESPONSE" | head -1)
+
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] || [ "$HTTP_CODE" = "202" ]; then
+              echo "✅ Report deployed (HTTP $HTTP_CODE)"
+            else
+              echo "❌ Report failed (HTTP $HTTP_CODE): $BODY"
+              exit 1
+            fi
+
+          done <<< "${{ steps.find_pbip.outputs.PBIP_FILES }}"
+
+      # ── Step 6: Summary ───────────────────────────────────────────────────
       - name: Deployment summary
         if: success()
         run: |
