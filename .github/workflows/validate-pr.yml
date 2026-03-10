@@ -1,0 +1,98 @@
+name: Validate PR
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - qa
+      - main
+    paths:
+      - '**.pbip'
+      - '**.Report/**'
+      - '**.SemanticModel/**'
+
+jobs:
+  validate:
+    name: Validate Power BI Files
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate PBIP structure
+        run: |
+          ERRORS=0
+
+          PBIP_FILES=$(find . -name "*.pbip" -type f)
+
+          if [ -z "$PBIP_FILES" ]; then
+            echo "❌ No .pbip files found"
+            exit 1
+          fi
+
+          echo "✅ Found PBIP files:"
+          echo "$PBIP_FILES"
+
+          while IFS= read -r PBIP_FILE; do
+            [ -z "$PBIP_FILE" ] && continue
+            REPORT_NAME=$(basename "$PBIP_FILE" .pbip)
+            PBIP_DIR=$(dirname "$PBIP_FILE")
+
+            # Check Report folder
+            REPORT_DIR="$PBIP_DIR/$REPORT_NAME.Report"
+            if [ ! -d "$REPORT_DIR" ]; then
+              echo "❌ Missing Report folder: $REPORT_DIR"
+              ERRORS=$((ERRORS + 1))
+            else
+              echo "✅ Report folder found: $REPORT_NAME.Report"
+            fi
+
+            # Check SemanticModel folder
+            MODEL_DIR="$PBIP_DIR/$REPORT_NAME.SemanticModel"
+            if [ ! -d "$MODEL_DIR" ]; then
+              echo "❌ Missing SemanticModel folder: $MODEL_DIR"
+              ERRORS=$((ERRORS + 1))
+            else
+              echo "✅ SemanticModel folder found: $REPORT_NAME.SemanticModel"
+            fi
+
+            # Check definition folder inside SemanticModel
+            if [ -d "$MODEL_DIR" ]; then
+              if [ ! -d "$MODEL_DIR/definition" ] && [ ! -f "$MODEL_DIR/model.bim" ]; then
+                echo "❌ SemanticModel missing definition folder or model.bim"
+                ERRORS=$((ERRORS + 1))
+              else
+                echo "✅ Semantic model definition found"
+              fi
+            fi
+
+          done <<< "$PBIP_FILES"
+
+          if [ $ERRORS -gt 0 ]; then
+            echo "❌ Validation failed with $ERRORS error(s)"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All structure checks passed"
+
+      - name: Check for .pbix files
+        run: |
+          PBIX_FILES=$(find . -name "*.pbix" -type f)
+          if [ -n "$PBIX_FILES" ]; then
+            echo "⚠️  .pbix files found — add *.pbix to .gitignore:"
+            echo "$PBIX_FILES"
+          else
+            echo "✅ No .pbix files found"
+          fi
+
+      - name: List changed Power BI files
+        run: |
+          echo "📝 Power BI files changed in this PR:"
+          git diff --name-only origin/${{ github.base_ref }}...HEAD \
+            | grep -E "\.(pbip|json|tmdl)$" \
+            | sed 's/^/   /' \
+            || echo "   (none)"

@@ -1,0 +1,107 @@
+name: Deploy to Dev
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - '**.pbip'
+      - '**.Report/**'
+      - '**.SemanticModel/**'
+
+jobs:
+  deploy-to-dev:
+    name: Publish to Dev Workspace
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get Azure AD access token
+        id: get_token
+        run: |
+          TOKEN_RESPONSE=$(curl -s -X POST \
+            "https://login.microsoftonline.com/${{ secrets.PBI_TENANT_ID }}/oauth2/v2.0/token" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "grant_type=client_credentials" \
+            -d "client_id=${{ secrets.PBI_CLIENT_ID }}" \
+            -d "client_secret=${{ secrets.PBI_CLIENT_SECRET }}" \
+            -d "scope=https://analysis.windows.net/powerbi/api/.default")
+
+          ACCESS_TOKEN=$(echo $TOKEN_RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "❌ Failed to get access token"
+            echo $TOKEN_RESPONSE
+            exit 1
+          fi
+
+          echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
+          echo "✅ Access token retrieved"
+
+      - name: Find PBIP files
+        id: find_pbip
+        run: |
+          PBIP_FILES=$(find . -name "*.pbip" -type f)
+          if [ -z "$PBIP_FILES" ]; then
+            echo "❌ No .pbip files found"
+            exit 1
+          fi
+          echo "📦 Found: $PBIP_FILES"
+          echo "PBIP_FILES<<EOF" >> $GITHUB_OUTPUT
+          echo "$PBIP_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Deploy to Dev workspace
+        run: |
+          ACCESS_TOKEN="${{ steps.get_token.outputs.ACCESS_TOKEN }}"
+          WORKSPACE_ID="${{ secrets.PBI_DEV_WORKSPACE_ID }}"
+
+          while IFS= read -r PBIP_FILE; do
+            [ -z "$PBIP_FILE" ] && continue
+            REPORT_NAME=$(basename "$PBIP_FILE" .pbip)
+            PBIP_DIR=$(dirname "$PBIP_FILE")
+            MODEL_DIR="$PBIP_DIR/$REPORT_NAME.SemanticModel"
+
+            echo "📦 Deploying: $REPORT_NAME"
+
+            if [ ! -d "$MODEL_DIR" ]; then
+              echo "⚠️  SemanticModel folder not found — skipping"
+              continue
+            fi
+
+            # Zip semantic model
+            cd "$MODEL_DIR"
+            zip -r "/tmp/${REPORT_NAME}-model.zip" . -x "*.DS_Store" > /dev/null
+            cd - > /dev/null
+
+            # Upload via REST API
+            IMPORT_URL="https://api.powerbi.com/v1.0/myorg/groups/$WORKSPACE_ID/imports?datasetDisplayName=${REPORT_NAME}&nameConflict=CreateOrOverwrite&skipReport=true"
+
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$IMPORT_URL" \
+              -H "Authorization: Bearer $ACCESS_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@/tmp/${REPORT_NAME}-model.zip")
+
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            BODY=$(echo "$RESPONSE" | head -1)
+
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              echo "✅ $REPORT_NAME deployed (HTTP $HTTP_CODE)"
+            else
+              echo "❌ Failed (HTTP $HTTP_CODE): $BODY"
+              exit 1
+            fi
+
+          done <<< "${{ steps.find_pbip.outputs.PBIP_FILES }}"
+
+      - name: Summary
+        if: success()
+        run: |
+          echo "=========================================="
+          echo "  ✅  Dev Deployment Complete"
+          echo "  Branch : ${{ github.ref_name }}"
+          echo "  Commit : ${{ github.sha }}"
+          echo "  URL    : https://app.powerbi.com/groups/${{ secrets.PBI_DEV_WORKSPACE_ID }}"
+          echo "=========================================="

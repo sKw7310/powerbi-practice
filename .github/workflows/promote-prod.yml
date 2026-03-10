@@ -1,0 +1,145 @@
+name: Promote QA to Prod
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+    paths:
+      - '**.pbip'
+      - '**.Report/**'
+      - '**.SemanticModel/**'
+
+jobs:
+  request-approval:
+    name: Request Prod Approval
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
+    environment:
+      name: prod   # Configure in GitHub: Settings → Environments → prod → Required reviewers
+
+    steps:
+      - name: Approval gate
+        run: |
+          echo "✋ Prod deployment approved — proceeding..."
+
+  promote-qa-to-prod:
+    name: Promote QA → Prod via Deployment Pipeline
+    runs-on: ubuntu-latest
+    needs: request-approval
+    if: github.event.pull_request.merged == true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get Azure AD access token
+        id: get_token
+        run: |
+          TOKEN_RESPONSE=$(curl -s -X POST \
+            "https://login.microsoftonline.com/${{ secrets.PBI_TENANT_ID }}/oauth2/v2.0/token" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "grant_type=client_credentials" \
+            -d "client_id=${{ secrets.PBI_CLIENT_ID }}" \
+            -d "client_secret=${{ secrets.PBI_CLIENT_SECRET }}" \
+            -d "scope=https://analysis.windows.net/powerbi/api/.default")
+
+          ACCESS_TOKEN=$(echo $TOKEN_RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "❌ Failed to get access token"
+            echo $TOKEN_RESPONSE
+            exit 1
+          fi
+
+          echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
+          echo "✅ Access token retrieved"
+
+      - name: Trigger Deployment Pipeline — QA to Prod
+        id: deploy
+        run: |
+          ACCESS_TOKEN="${{ steps.get_token.outputs.ACCESS_TOKEN }}"
+          PIPELINE_ID="${{ secrets.PBI_PIPELINE_ID }}"
+
+          # Stage indexes: 0 = Dev, 1 = QA, 2 = Prod
+          PAYLOAD=$(cat <<EOF
+          {
+            "sourceStageOrder": 1,
+            "targetStageOrder": 2,
+            "isBackwardDeployment": false,
+            "newWorkspace": false,
+            "options": {
+              "allowCreateArtifact": true,
+              "allowOverwriteArtifact": true,
+              "allowOverwriteTargetArtifactLabel": true
+            }
+          }
+          EOF
+          )
+
+          echo "🚀 Triggering: QA (stage 1) → Prod (stage 2)"
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://api.powerbi.com/v1.0/myorg/pipelines/$PIPELINE_ID/deploy" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -1)
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            OPERATION_ID=$(echo $BODY | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
+            echo "📋 Operation ID: $OPERATION_ID"
+            echo "OPERATION_ID=$OPERATION_ID" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Failed to trigger pipeline (HTTP $HTTP_CODE)"
+            echo "Response: $BODY"
+            exit 1
+          fi
+
+      - name: Poll for deployment completion
+        run: |
+          ACCESS_TOKEN="${{ steps.get_token.outputs.ACCESS_TOKEN }}"
+          PIPELINE_ID="${{ secrets.PBI_PIPELINE_ID }}"
+          OPERATION_ID="${{ steps.deploy.outputs.OPERATION_ID }}"
+          MAX_WAIT=30
+          ITERATION=0
+
+          echo "⏳ Polling for completion..."
+
+          while [ $ITERATION -lt $MAX_WAIT ]; do
+            sleep 10
+            ITERATION=$((ITERATION + 1))
+
+            STATUS_RESPONSE=$(curl -s \
+              "https://api.powerbi.com/v1.0/myorg/pipelines/$PIPELINE_ID/operations/$OPERATION_ID" \
+              -H "Authorization: Bearer $ACCESS_TOKEN")
+
+            STATUS=$(echo $STATUS_RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','Unknown'))")
+            echo "   Check $ITERATION/$MAX_WAIT — Status: $STATUS"
+
+            if [ "$STATUS" = "Succeeded" ]; then
+              echo "✅ QA → Prod promotion succeeded"
+              echo "Prod Workspace: https://app.powerbi.com/groups/${{ secrets.PBI_PROD_WORKSPACE_ID }}"
+              exit 0
+            elif [ "$STATUS" = "Failed" ]; then
+              echo "❌ Deployment pipeline failed"
+              echo "$STATUS_RESPONSE"
+              exit 1
+            fi
+          done
+
+          echo "❌ Timed out waiting for deployment"
+          exit 1
+
+      - name: Summary
+        if: success()
+        run: |
+          echo "=========================================="
+          echo "  🎉  QA → Prod Promotion Complete"
+          echo "  PR  : ${{ github.event.pull_request.title }}"
+          echo "  By  : ${{ github.event.pull_request.merged_by.login }}"
+          echo "  URL : https://app.powerbi.com/groups/${{ secrets.PBI_PROD_WORKSPACE_ID }}"
+          echo "=========================================="
