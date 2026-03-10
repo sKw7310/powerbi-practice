@@ -1,0 +1,125 @@
+table FactSales
+	lineageTag: 1360c9c4-0985-4ff4-ade0-5840e0c079b0
+
+	measure 'Total Sales' = SUM(FactSales[SalesAmount])
+		lineageTag: 35dbed21-7e67-404a-a514-8b308e642b2a
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column SalesOrderID
+		dataType: int64
+		formatString: 0
+		lineageTag: 3d0cd3ea-80ef-400a-940e-49f321e45d4e
+		summarizeBy: count
+		sourceColumn: SalesOrderID
+
+		annotation SummarizationSetBy = Automatic
+
+	column DateKey
+		dataType: int64
+		formatString: 0
+		lineageTag: daa395bf-ea98-4672-b784-1ef91c3a02fe
+		summarizeBy: none
+		sourceColumn: DateKey
+
+		annotation SummarizationSetBy = Automatic
+
+	column CustomerKey
+		dataType: int64
+		formatString: 0
+		lineageTag: 9580b701-973c-44d7-9f38-59b2364c82ad
+		summarizeBy: none
+		sourceColumn: CustomerKey
+
+		annotation SummarizationSetBy = Automatic
+
+	column ProductKey
+		dataType: int64
+		formatString: 0
+		lineageTag: a2a1e352-0f62-494f-b7f8-1705ef92659d
+		summarizeBy: none
+		sourceColumn: ProductKey
+
+		annotation SummarizationSetBy = Automatic
+
+	column SalesRepKey
+		dataType: int64
+		formatString: 0
+		lineageTag: 5e65aeb8-b30f-4a2e-b9b9-2e1f773239d9
+		summarizeBy: none
+		sourceColumn: SalesRepKey
+
+		annotation SummarizationSetBy = Automatic
+
+	column Quantity
+		dataType: int64
+		formatString: 0
+		lineageTag: bca05e80-9c56-4f49-bf4a-62b9874b9da5
+		summarizeBy: sum
+		sourceColumn: Quantity
+
+		annotation SummarizationSetBy = Automatic
+
+	column UnitPrice
+		dataType: double
+		lineageTag: 71ad6ab8-ffa8-44c9-b547-0c40b9de0609
+		summarizeBy: sum
+		sourceColumn: UnitPrice
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column Discount
+		dataType: double
+		lineageTag: 13e92249-c587-4347-a4db-37d3dacdd733
+		summarizeBy: sum
+		sourceColumn: Discount
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column SalesAmount
+		dataType: double
+		lineageTag: 79f9e828-aa7d-4adb-b910-dfa0fbddfef0
+		summarizeBy: sum
+		sourceColumn: SalesAmount
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column CostAmount
+		dataType: double
+		lineageTag: 286fccc6-ac41-4f01-923f-b42dc8ae666c
+		summarizeBy: sum
+		sourceColumn: CostAmount
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column GrossProfit
+		dataType: double
+		lineageTag: 4df37884-4986-4d8b-bef4-89d54fd15036
+		summarizeBy: sum
+		sourceColumn: GrossProfit
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	partition FactSales = m
+		mode: import
+		source =
+				let
+				    Source = Excel.Workbook(File.Contents("F:\kowluri\projects\PowerBI\SalesData_PowerBI.xlsx"), null, true),
+				    FactSales_Sheet = Source{[Item="FactSales",Kind="Sheet"]}[Data],
+				    #"Promoted Headers" = Table.PromoteHeaders(FactSales_Sheet, [PromoteAllScalars=true]),
+				    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers",{{"SalesOrderID", Int64.Type}, {"DateKey", Int64.Type}, {"CustomerKey", Int64.Type}, {"ProductKey", Int64.Type}, {"SalesRepKey", Int64.Type}, {"Quantity", Int64.Type}, {"UnitPrice", type number}, {"Discount", type number}, {"SalesAmount", type number}, {"CostAmount", type number}, {"GrossProfit", type number}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+

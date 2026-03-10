@@ -1,0 +1,91 @@
+table DimDate
+	lineageTag: d6192a2f-dff6-4f30-a797-7573a6318806
+	dataCategory: Time
+
+	column DateKey
+		dataType: int64
+		formatString: 0
+		lineageTag: d57230ea-f280-4099-86e7-f7b163000996
+		summarizeBy: none
+		sourceColumn: DateKey
+
+		annotation SummarizationSetBy = Automatic
+
+	column Date
+		dataType: dateTime
+		isKey
+		formatString: Long Date
+		lineageTag: 3d97bfe6-0c3d-4bfd-9c39-0e7fbe6d8275
+		summarizeBy: none
+		sourceColumn: Date
+
+		changedProperty = DataType
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column Year
+		dataType: int64
+		formatString: 0
+		lineageTag: 349d6320-52de-453d-ba17-c762c8d836b1
+		summarizeBy: sum
+		sourceColumn: Year
+
+		annotation SummarizationSetBy = Automatic
+
+	column Quarter
+		dataType: string
+		lineageTag: 4d79ea97-c3bb-4f27-a115-6633a839ba77
+		summarizeBy: none
+		sourceColumn: Quarter
+
+		annotation SummarizationSetBy = Automatic
+
+	column Month
+		dataType: int64
+		formatString: 0
+		lineageTag: 5077b68a-bb9b-4902-a6e0-4723c3546813
+		summarizeBy: sum
+		sourceColumn: Month
+
+		annotation SummarizationSetBy = Automatic
+
+	column MonthName
+		dataType: string
+		lineageTag: cf49623f-c251-4b6e-93c5-f0ccba20db7f
+		summarizeBy: none
+		sourceColumn: MonthName
+
+		annotation SummarizationSetBy = Automatic
+
+	column Weekday
+		dataType: string
+		lineageTag: 38d2b6b8-8e6f-4a1d-a735-536de962fff1
+		summarizeBy: none
+		sourceColumn: Weekday
+
+		annotation SummarizationSetBy = Automatic
+
+	column IsWeekend
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: eda3e60b-ee00-40ee-b6c8-8072d3d09216
+		summarizeBy: none
+		sourceColumn: IsWeekend
+
+		annotation SummarizationSetBy = Automatic
+
+	partition DimDate = m
+		mode: import
+		source =
+				let
+				    Source = Excel.Workbook(File.Contents("F:\kowluri\projects\PowerBI\SalesData_PowerBI.xlsx"), null, true),
+				    DimDate_Sheet = Source{[Item="DimDate",Kind="Sheet"]}[Data],
+				    #"Promoted Headers" = Table.PromoteHeaders(DimDate_Sheet, [PromoteAllScalars=true]),
+				    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers",{{"DateKey", Int64.Type}, {"Date", Int64.Type}, {"Year", Int64.Type}, {"Quarter", type text}, {"Month", Int64.Type}, {"MonthName", type text}, {"Weekday", type text}, {"IsWeekend", type logical}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+

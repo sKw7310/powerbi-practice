@@ -1,0 +1,57 @@
+table DimSalesRep
+	lineageTag: 6f38d734-92d2-45f6-bf72-4b822f10c97e
+
+	column SalesRepKey
+		dataType: int64
+		formatString: 0
+		lineageTag: d9a591aa-f29d-44c4-a04e-aa10983a81a2
+		summarizeBy: none
+		sourceColumn: SalesRepKey
+
+		annotation SummarizationSetBy = Automatic
+
+	column RepID
+		dataType: string
+		lineageTag: 697cd355-75c6-4335-b5c3-83d9f8e6e08d
+		summarizeBy: none
+		sourceColumn: RepID
+
+		annotation SummarizationSetBy = Automatic
+
+	column RepName
+		dataType: string
+		lineageTag: 91b8dfe6-3b17-4cdb-97e5-ff911b330065
+		summarizeBy: none
+		sourceColumn: RepName
+
+		annotation SummarizationSetBy = Automatic
+
+	column Region
+		dataType: string
+		lineageTag: e0dbe5e4-5ceb-461a-8e6f-eecb8c3bd3cb
+		summarizeBy: none
+		sourceColumn: Region
+
+		annotation SummarizationSetBy = Automatic
+
+	column Manager
+		dataType: string
+		lineageTag: 7a7bdd9e-22cd-4ab4-a582-ecce8d5a6432
+		summarizeBy: none
+		sourceColumn: Manager
+
+		annotation SummarizationSetBy = Automatic
+
+	partition DimSalesRep = m
+		mode: import
+		source =
+				let
+				    Source = Excel.Workbook(File.Contents("F:\kowluri\projects\PowerBI\SalesData_PowerBI.xlsx"), null, true),
+				    DimSalesRep_Sheet = Source{[Item="DimSalesRep",Kind="Sheet"]}[Data],
+				    #"Promoted Headers" = Table.PromoteHeaders(DimSalesRep_Sheet, [PromoteAllScalars=true]),
+				    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers",{{"SalesRepKey", Int64.Type}, {"RepID", type text}, {"RepName", type text}, {"Region", type text}, {"Manager", type text}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+

@@ -1,0 +1,115 @@
+table DimCustomer
+	lineageTag: 6b70f731-ebf1-417a-bef0-8bfa23583230
+
+	measure 'Total Cost' = SUM(FactSales[CostAmount])
+		lineageTag: c032c05a-cd2f-432f-89fd-67d4e8dcaa3d
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure 'Gross Profit' = SUM(FactSales[GrossProfit])
+		lineageTag: abb94242-abfa-4bcb-bb41-aba54685447e
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure 'Gross Margin %' = DIVIDE([Gross Profit], [Total Sales], 0)
+		lineageTag: d63d4c0b-d35d-4ef8-843b-1caef43b0acc
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure 'Total Orders' = DISTINCTCOUNT(FactSales[SalesOrderID])
+		formatString: 0
+		lineageTag: 8b0cc10a-01f8-41b8-a1f8-7809a6a5d503
+
+	measure 'Avg Order Value' = DIVIDE([Total Sales], [Total Orders], 0)
+		lineageTag: 60579caf-d137-48df-8ec4-3c9fd3355f8e
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure 'YTD Sales' = TOTALYTD([Total Sales], DimDate[Date])
+		formatString: 0
+		lineageTag: 8b79c155-423a-4baa-bc72-7c47846456bd
+
+	measure 'Sales LY' = CALCULATE([Total Sales], SAMEPERIODLASTYEAR(DimDate[Date]))
+		formatString: 0
+		lineageTag: eb52be7e-bc78-4804-83f3-9428b0223b3b
+
+	measure 'Sales vs LY %' = ```
+			DIVIDE([Total Sales] - [Sales LY], [Sales LY], 0)
+			
+			
+			```
+		lineageTag: 38dc5463-04e9-4ba9-9fe2-0c9bb94775a3
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column CustomerKey
+		dataType: int64
+		formatString: 0
+		lineageTag: a51e95ae-77bf-4aa7-9bfc-35dd95cc9cdb
+		summarizeBy: none
+		sourceColumn: CustomerKey
+
+		annotation SummarizationSetBy = Automatic
+
+	column CustomerID
+		dataType: string
+		lineageTag: 49632bb9-f471-4b41-9233-78aa2b48bbfa
+		summarizeBy: none
+		sourceColumn: CustomerID
+
+		annotation SummarizationSetBy = Automatic
+
+	column CustomerName
+		dataType: string
+		lineageTag: 19a9b1d2-ee6e-4dbb-80f7-b2d4e4cd9ce3
+		summarizeBy: none
+		sourceColumn: CustomerName
+
+		annotation SummarizationSetBy = Automatic
+
+	column Segment
+		dataType: string
+		lineageTag: 1787253f-1577-4051-9ad4-7027bee82bb2
+		summarizeBy: none
+		sourceColumn: Segment
+
+		annotation SummarizationSetBy = Automatic
+
+	column Country
+		dataType: string
+		lineageTag: 700c31b3-e2bb-4415-b8da-d49d858c236f
+		summarizeBy: none
+		sourceColumn: Country
+
+		annotation SummarizationSetBy = Automatic
+
+	column City
+		dataType: string
+		lineageTag: 07491c07-7c19-4119-84be-f500df09503e
+		summarizeBy: none
+		sourceColumn: City
+
+		annotation SummarizationSetBy = Automatic
+
+	column JoinDate
+		dataType: int64
+		formatString: 0
+		lineageTag: edbd8431-588b-47ac-9b1e-6289fc4aea06
+		summarizeBy: none
+		sourceColumn: JoinDate
+
+		annotation SummarizationSetBy = Automatic
+
+	partition DimCustomer = m
+		mode: import
+		source =
+				let
+				    Source = Excel.Workbook(File.Contents("F:\kowluri\projects\PowerBI\SalesData_PowerBI.xlsx"), null, true),
+				    DimCustomer_Sheet = Source{[Item="DimCustomer",Kind="Sheet"]}[Data],
+				    #"Promoted Headers" = Table.PromoteHeaders(DimCustomer_Sheet, [PromoteAllScalars=true]),
+				    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers",{{"CustomerKey", Int64.Type}, {"CustomerID", type text}, {"CustomerName", type text}, {"Segment", type text}, {"Country", type text}, {"City", type text}, {"JoinDate", Int64.Type}})
+				in
+				    #"Changed Type"
+
+	annotation PBI_ResultType = Table
+

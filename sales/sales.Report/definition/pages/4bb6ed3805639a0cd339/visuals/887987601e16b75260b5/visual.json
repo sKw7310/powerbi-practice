@@ -1,0 +1,56 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.6.0/schema.json",
+  "name": "887987601e16b75260b5",
+  "position": {
+    "x": 860.93541202672611,
+    "y": 6.414253897550112,
+    "z": 2000,
+    "height": 220.2227171492205,
+    "width": 344.94432071269489,
+    "tabOrder": 2000
+  },
+  "visual": {
+    "visualType": "PBI_CV_7B952816_A48F_49B4_9E13_15E3BB2C0337",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "DimCustomer"
+                    }
+                  },
+                  "Property": "Total Orders"
+                }
+              },
+              "queryRef": "DimCustomer.Total Orders",
+              "nativeQueryRef": "Total Orders"
+            }
+          ]
+        }
+      }
+    },
+    "drillFilterOtherVisuals": true
+  },
+  "filterConfig": {
+    "filters": [
+      {
+        "name": "678a995081e3eb20648b",
+        "field": {
+          "Measure": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "DimCustomer"
+              }
+            },
+            "Property": "Total Orders"
+          }
+        },
+        "type": "Advanced"
+      }
+    ]
+  }
+}

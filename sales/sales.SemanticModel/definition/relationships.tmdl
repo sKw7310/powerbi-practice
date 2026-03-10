@@ -1,0 +1,16 @@
+relationship AutoDetected_21b84b6b-1899-41a6-8841-45f5fa8c91de
+	fromColumn: FactSales.CustomerKey
+	toColumn: DimCustomer.CustomerKey
+
+relationship AutoDetected_bfc0548a-876a-42ae-93d9-3ed54b0dfb60
+	fromColumn: FactSales.DateKey
+	toColumn: DimDate.DateKey
+
+relationship AutoDetected_78805d4f-6ac1-43ae-8604-11ff68d22c7c
+	fromColumn: FactSales.ProductKey
+	toColumn: DimProduct.ProductKey
+
+relationship AutoDetected_a5d9894a-5334-4c0c-93ca-40288d98a71d
+	fromColumn: FactSales.SalesRepKey
+	toColumn: DimSalesRep.SalesRepKey
+

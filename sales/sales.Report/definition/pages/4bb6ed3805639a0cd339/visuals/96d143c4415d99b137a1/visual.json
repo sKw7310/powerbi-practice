@@ -1,0 +1,38 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.6.0/schema.json",
+  "name": "96d143c4415d99b137a1",
+  "position": {
+    "x": 377.728285077951,
+    "y": 16.391982182628063,
+    "z": 1000,
+    "height": 250.86859688195992,
+    "width": 388.41870824053456,
+    "tabOrder": 1000
+  },
+  "visual": {
+    "visualType": "PBI_CV_7B952816_A48F_49B4_9E13_15E3BB2C0337",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "DimCustomer"
+                    }
+                  },
+                  "Property": "Gross Margin %"
+                }
+              },
+              "queryRef": "DimCustomer.Gross Margin %",
+              "nativeQueryRef": "Gross Margin %"
+            }
+          ]
+        }
+      }
+    },
+    "drillFilterOtherVisuals": true
+  }
+}
