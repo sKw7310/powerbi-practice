@@ -6,10 +6,6 @@ on:
       - qa
     types:
       - closed
-    paths:
-      - '**.pbip'
-      - '**.Report/**'
-      - '**.SemanticModel/**'
 
 jobs:
   promote-dev-to-qa:
