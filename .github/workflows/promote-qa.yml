@@ -40,24 +40,70 @@ jobs:
           echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
           echo "✅ Access token retrieved"
 
+      - name: Get pipeline artifacts from Dev stage
+        id: get_artifacts
+        run: |
+          ACCESS_TOKEN="${{ steps.get_token.outputs.ACCESS_TOKEN }}"
+          PIPELINE_ID="${{ secrets.PBI_PIPELINE_ID }}"
+
+          echo "🔍 Fetching Dev stage artifacts..."
+
+          ARTIFACTS=$(curl -s \
+            "https://api.powerbi.com/v1.0/myorg/pipelines/$PIPELINE_ID/stages/0/artifacts" \
+            -H "Authorization: Bearer $ACCESS_TOKEN")
+
+          echo "Artifacts: $ARTIFACTS"
+
+          # Extract dataset and report IDs
+          DATASETS=$(echo "$ARTIFACTS" | python3 -c "
+          import sys,json
+          d = json.load(sys.stdin)
+          ids = [{'sourceId': i['artifactId']} for i in d.get('datasets', [])]
+          print(json.dumps(ids))
+          ")
+
+          REPORTS=$(echo "$ARTIFACTS" | python3 -c "
+          import sys,json
+          d = json.load(sys.stdin)
+          ids = [{'sourceId': i['artifactId']} for i in d.get('reports', [])]
+          print(json.dumps(ids))
+          ")
+
+          echo "Datasets: $DATASETS"
+          echo "Reports: $REPORTS"
+
+          echo "DATASETS=$DATASETS" >> $GITHUB_OUTPUT
+          echo "REPORTS=$REPORTS" >> $GITHUB_OUTPUT
+
       - name: Trigger Deployment Pipeline — Dev to QA
         id: deploy
         run: |
           ACCESS_TOKEN="${{ steps.get_token.outputs.ACCESS_TOKEN }}"
           PIPELINE_ID="${{ secrets.PBI_PIPELINE_ID }}"
+          DATASETS="${{ steps.get_artifacts.outputs.DATASETS }}"
+          REPORTS="${{ steps.get_artifacts.outputs.REPORTS }}"
 
-          PAYLOAD='{
-            "sourceStageOrder": 0,
-            "targetStageOrder": 1,
-            "isBackwardDeployment": false,
-            "options": {
-              "allowCreateArtifact": true,
-              "allowOverwriteArtifact": true,
-              "allowOverwriteTargetArtifactLabel": true
+          # Build payload with explicit artifact IDs
+          PAYLOAD=$(python3 -c "
+          import json
+          datasets = json.loads('$DATASETS')
+          reports  = json.loads('$REPORTS')
+          payload  = {
+            'sourceStageOrder': 0,
+            'targetStageOrder': 1,
+            'isBackwardDeployment': False,
+            'items': datasets + reports,
+            'options': {
+              'allowCreateArtifact': True,
+              'allowOverwriteArtifact': True,
+              'allowOverwriteTargetArtifactLabel': True
             }
-          }'
+          }
+          print(json.dumps(payload))
+          ")
 
           echo "🚀 Triggering: Dev (stage 0) → QA (stage 1)"
+          echo "Payload: $PAYLOAD"
 
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
             "https://api.powerbi.com/v1.0/myorg/pipelines/$PIPELINE_ID/deploy" \
