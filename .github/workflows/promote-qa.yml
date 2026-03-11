@@ -125,4 +125,4 @@ jobs:
           echo "  PR  : ${{ github.event.pull_request.title }}"
           echo "  By  : ${{ github.event.pull_request.merged_by.login }}"
           echo "  URL : https://app.powerbi.com/groups/${{ secrets.PBI_QA_WORKSPACE_ID }}/list"
-          echo "=========================================="
+          echo "=========================================="" " 
