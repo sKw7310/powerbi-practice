@@ -49,21 +49,16 @@ jobs:
           ACCESS_TOKEN="${{ steps.get_token.outputs.ACCESS_TOKEN }}"
           PIPELINE_ID="${{ secrets.PBI_PIPELINE_ID }}"
 
-          # Stage indexes: 0 = Dev, 1 = QA, 2 = Prod
-          PAYLOAD=$(cat <<EOF
-          {
+          PAYLOAD='{
             "sourceStageOrder": 0,
             "targetStageOrder": 1,
             "isBackwardDeployment": false,
-            "newWorkspace": false,
             "options": {
               "allowCreateArtifact": true,
               "allowOverwriteArtifact": true,
               "allowOverwriteTargetArtifactLabel": true
             }
-          }
-          EOF
-          )
+          }'
 
           echo "🚀 Triggering: Dev (stage 0) → QA (stage 1)"
 
@@ -76,13 +71,15 @@ jobs:
           HTTP_CODE=$(echo "$RESPONSE" | tail -1)
           BODY=$(echo "$RESPONSE" | head -1)
 
+          echo "HTTP: $HTTP_CODE"
+          echo "Response: $BODY"
+
           if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
             OPERATION_ID=$(echo $BODY | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
             echo "📋 Operation ID: $OPERATION_ID"
             echo "OPERATION_ID=$OPERATION_ID" >> $GITHUB_OUTPUT
           else
             echo "❌ Failed to trigger pipeline (HTTP $HTTP_CODE)"
-            echo "Response: $BODY"
             exit 1
           fi
 
@@ -109,7 +106,6 @@ jobs:
 
             if [ "$STATUS" = "Succeeded" ]; then
               echo "✅ Dev → QA promotion succeeded"
-              echo "QA Workspace: https://app.powerbi.com/groups/${{ secrets.PBI_QA_WORKSPACE_ID }}"
               exit 0
             elif [ "$STATUS" = "Failed" ]; then
               echo "❌ Deployment pipeline failed"
@@ -128,5 +124,5 @@ jobs:
           echo "  ✅  Dev → QA Promotion Complete"
           echo "  PR  : ${{ github.event.pull_request.title }}"
           echo "  By  : ${{ github.event.pull_request.merged_by.login }}"
-          echo "  URL : https://app.powerbi.com/groups/${{ secrets.PBI_QA_WORKSPACE_ID }}"
+          echo "  URL : https://app.powerbi.com/groups/${{ secrets.PBI_QA_WORKSPACE_ID }}/list"
           echo "=========================================="
