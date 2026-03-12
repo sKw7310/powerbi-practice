@@ -6,6 +6,10 @@ table FactSales
 
 		annotation PBI_FormatHint = {"isGeneralNumber":true}
 
+	measure 'Test Measure' = 1
+		formatString: 0
+		lineageTag: 0f61f240-b6e0-4aa7-be29-f50b2f7f4249
+
 	column SalesOrderID
 		dataType: int64
 		formatString: 0
