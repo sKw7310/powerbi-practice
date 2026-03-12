@@ -6,37 +6,24 @@ on:
       - main
     types:
       - closed
-    paths:
-      - '**.pbip'
-      - '**.Report/**'
-      - '**.SemanticModel/**'
+  workflow_dispatch:
 
 jobs:
-  request-approval:
-    name: Request Prod Approval
+  deploy-to-prod:
+    name: Publish to sales_prod workspace
     runs-on: ubuntu-latest
-    if: github.event.pull_request.merged == true
-    environment:
-      name: prod   # Configure in GitHub: Settings → Environments → prod → Required reviewers
-
-    steps:
-      - name: Approval gate
-        run: |
-          echo "✋ Prod deployment approved — proceeding..."
-
-  promote-qa-to-prod:
-    name: Promote QA → Prod via Deployment Pipeline
-    runs-on: ubuntu-latest
-    needs: request-approval
-    if: github.event.pull_request.merged == true
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ── Step 1: Get OAuth2 token ──────────────────────────────────────────
       - name: Get Azure AD access token
         id: get_token
         run: |
+          echo "🔑 Requesting access token..."
+
           TOKEN_RESPONSE=$(curl -s -X POST \
             "https://login.microsoftonline.com/${{ secrets.PBI_TENANT_ID }}/oauth2/v2.0/token" \
             -H "Content-Type: application/x-www-form-urlencoded" \
@@ -45,101 +32,324 @@ jobs:
             -d "client_secret=${{ secrets.PBI_CLIENT_SECRET }}" \
             -d "scope=https://analysis.windows.net/powerbi/api/.default")
 
-          ACCESS_TOKEN=$(echo $TOKEN_RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-
-          if [ -z "$ACCESS_TOKEN" ]; then
-            echo "❌ Failed to get access token"
-            echo $TOKEN_RESPONSE
+          ERROR=$(echo $TOKEN_RESPONSE | python3 -c \
+            "import sys,json; d=json.load(sys.stdin); print(d.get('error',''))" 2>/dev/null)
+          if [ -n "$ERROR" ]; then
+            echo "❌ Auth failed: $ERROR"
             exit 1
           fi
 
+          ACCESS_TOKEN=$(echo $TOKEN_RESPONSE | python3 -c \
+            "import sys,json; print(json.load(sys.stdin)['access_token'])")
           echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
           echo "✅ Access token retrieved"
 
-      - name: Trigger Deployment Pipeline — QA to Prod
-        id: deploy
+      # ── Step 2: Find PBIP files ───────────────────────────────────────────
+      - name: Find PBIP files
+        id: find_pbip
         run: |
-          ACCESS_TOKEN="${{ steps.get_token.outputs.ACCESS_TOKEN }}"
-          PIPELINE_ID="${{ secrets.PBI_PIPELINE_ID }}"
-
-          # Stage indexes: 0 = Dev, 1 = QA, 2 = Prod
-          PAYLOAD=$(cat <<EOF
-          {
-            "sourceStageOrder": 1,
-            "targetStageOrder": 2,
-            "isBackwardDeployment": false,
-            "newWorkspace": false,
-            "options": {
-              "allowCreateArtifact": true,
-              "allowOverwriteArtifact": true,
-              "allowOverwriteTargetArtifactLabel": true
-            }
-          }
-          EOF
-          )
-
-          echo "🚀 Triggering: QA (stage 1) → Prod (stage 2)"
-
-          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-            "https://api.powerbi.com/v1.0/myorg/pipelines/$PIPELINE_ID/deploy" \
-            -H "Authorization: Bearer $ACCESS_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
-
-          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-          BODY=$(echo "$RESPONSE" | head -1)
-
-          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
-            OPERATION_ID=$(echo $BODY | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
-            echo "📋 Operation ID: $OPERATION_ID"
-            echo "OPERATION_ID=$OPERATION_ID" >> $GITHUB_OUTPUT
-          else
-            echo "❌ Failed to trigger pipeline (HTTP $HTTP_CODE)"
-            echo "Response: $BODY"
+          PBIP_FILES=$(find . -name "*.pbip" -not -path "*/.git/*" -type f)
+          if [ -z "$PBIP_FILES" ]; then
+            echo "❌ No .pbip files found"
             exit 1
           fi
+          echo "📦 Found: $PBIP_FILES"
+          echo "PBIP_FILES<<EOF" >> $GITHUB_OUTPUT
+          echo "$PBIP_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Poll for deployment completion
+      # ── Step 3: Deploy Semantic Model ─────────────────────────────────────
+      - name: Deploy Semantic Model to sales_prod
+        id: deploy_model
         run: |
           ACCESS_TOKEN="${{ steps.get_token.outputs.ACCESS_TOKEN }}"
-          PIPELINE_ID="${{ secrets.PBI_PIPELINE_ID }}"
-          OPERATION_ID="${{ steps.deploy.outputs.OPERATION_ID }}"
-          MAX_WAIT=30
-          ITERATION=0
+          WORKSPACE_ID="${{ secrets.PBI_PROD_WORKSPACE_ID }}"
 
-          echo "⏳ Polling for completion..."
+          while IFS= read -r PBIP_FILE; do
+            [ -z "$PBIP_FILE" ] && continue
+            REPORT_NAME=$(basename "$PBIP_FILE" .pbip)
+            PBIP_DIR=$(dirname "$PBIP_FILE")
+            MODEL_DIR="$PBIP_DIR/$REPORT_NAME.SemanticModel"
 
-          while [ $ITERATION -lt $MAX_WAIT ]; do
-            sleep 10
-            ITERATION=$((ITERATION + 1))
+            echo "========== Semantic Model: $REPORT_NAME =========="
 
-            STATUS_RESPONSE=$(curl -s \
-              "https://api.powerbi.com/v1.0/myorg/pipelines/$PIPELINE_ID/operations/$OPERATION_ID" \
+            if [ ! -d "$MODEL_DIR" ]; then
+              echo "⚠️  No SemanticModel folder — skipping"
+              continue
+            fi
+
+            PARTS_JSON=$(python3 - "$MODEL_DIR" << 'PYEOF'
+          import os, base64, json, sys
+          model_dir = sys.argv[1]
+          parts = []
+          for root, dirs, files in os.walk(model_dir):
+              dirs[:] = sorted([d for d in dirs if not d.startswith('.')])
+              for fname in sorted(files):
+                  if fname.startswith('.'): continue
+                  fpath = os.path.join(root, fname)
+                  rel_path = os.path.relpath(fpath, model_dir).replace('\\', '/')
+                  with open(fpath, 'rb') as f:
+                      content = base64.b64encode(f.read()).decode('utf-8')
+                  parts.append({"path": rel_path, "payload": content, "payloadType": "InlineBase64"})
+                  sys.stderr.write(f"  Added: {rel_path}\n")
+          print(json.dumps(parts))
+          PYEOF
+          )
+
+            EXISTING=$(curl -s \
+              "https://api.powerbi.com/v1.0/myorg/groups/$WORKSPACE_ID/datasets" \
               -H "Authorization: Bearer $ACCESS_TOKEN")
 
-            STATUS=$(echo $STATUS_RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','Unknown'))")
-            echo "   Check $ITERATION/$MAX_WAIT — Status: $STATUS"
+            MODEL_ID=$(echo "$EXISTING" | python3 -c "
+          import sys,json
+          items = json.load(sys.stdin).get('value', [])
+          match = [i for i in items if i.get('name','') == '$REPORT_NAME']
+          print(match[0]['id'] if match else '')
+          " 2>/dev/null)
 
-            if [ "$STATUS" = "Succeeded" ]; then
-              echo "✅ QA → Prod promotion succeeded"
-              echo "Prod Workspace: https://app.powerbi.com/groups/${{ secrets.PBI_PROD_WORKSPACE_ID }}"
-              exit 0
-            elif [ "$STATUS" = "Failed" ]; then
-              echo "❌ Deployment pipeline failed"
-              echo "$STATUS_RESPONSE"
+            if [ -n "$MODEL_ID" ]; then
+              echo "→ Updating existing semantic model (ID: $MODEL_ID)"
+              PAYLOAD=$(echo "$PARTS_JSON" | python3 -c "
+          import json,sys; parts=json.loads(sys.stdin.read())
+          print(json.dumps({'definition': {'parts': parts}}))
+          ")
+              curl -s -o /dev/null -X POST \
+                "https://api.fabric.microsoft.com/v1/workspaces/$WORKSPACE_ID/semanticModels/$MODEL_ID/updateDefinition" \
+                -H "Authorization: Bearer $ACCESS_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "$PAYLOAD"
+            else
+              echo "→ Creating new semantic model"
+              PAYLOAD=$(echo "$PARTS_JSON" | python3 -c "
+          import json,sys; parts=json.loads(sys.stdin.read())
+          print(json.dumps({'displayName': '$REPORT_NAME', 'definition': {'parts': parts}}))
+          ")
+              RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+                "https://api.fabric.microsoft.com/v1/workspaces/$WORKSPACE_ID/semanticModels" \
+                -H "Authorization: Bearer $ACCESS_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "$PAYLOAD")
+
+              HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+              if [ "$HTTP_CODE" = "202" ]; then
+                echo "⏳ Waiting for semantic model to be ready..."
+                for i in $(seq 1 18); do
+                  sleep 5
+                  DATASETS=$(curl -s \
+                    "https://api.powerbi.com/v1.0/myorg/groups/$WORKSPACE_ID/datasets" \
+                    -H "Authorization: Bearer $ACCESS_TOKEN")
+                  MODEL_ID=$(echo "$DATASETS" | python3 -c "
+          import sys,json
+          items = json.load(sys.stdin).get('value', [])
+          match = [i for i in items if i.get('name','') == '$REPORT_NAME']
+          print(match[0]['id'] if match else '')
+          " 2>/dev/null)
+                  if [ -n "$MODEL_ID" ]; then
+                    echo "✅ Semantic model ready (ID: $MODEL_ID)"
+                    break
+                  fi
+                  echo "   [$i/18] Not ready yet..."
+                done
+              fi
+            fi
+
+            echo "MODEL_ID=$MODEL_ID" >> $GITHUB_OUTPUT
+            echo "REPORT_NAME=$REPORT_NAME" >> $GITHUB_OUTPUT
+
+          done <<< "${{ steps.find_pbip.outputs.PBIP_FILES }}"
+
+      # ── Step 4: Deploy Report — patch byPath→byConnection in definition.pbir
+      - name: Deploy Report to sales_prod
+        id: deploy_report
+        run: |
+          ACCESS_TOKEN="${{ steps.get_token.outputs.ACCESS_TOKEN }}"
+          WORKSPACE_ID="${{ secrets.PBI_PROD_WORKSPACE_ID }}"
+          MODEL_ID="${{ steps.deploy_model.outputs.MODEL_ID }}"
+          REPORT_NAME="${{ steps.deploy_model.outputs.REPORT_NAME }}"
+
+          echo "========== Report: $REPORT_NAME =========="
+          echo "Linking to Semantic Model ID: $MODEL_ID"
+
+          while IFS= read -r PBIP_FILE; do
+            [ -z "$PBIP_FILE" ] && continue
+            R_NAME=$(basename "$PBIP_FILE" .pbip)
+            PBIP_DIR=$(dirname "$PBIP_FILE")
+            REPORT_DIR="$PBIP_DIR/$R_NAME.Report"
+
+            if [ ! -d "$REPORT_DIR" ]; then
+              echo "⚠️  No Report folder at: $REPORT_DIR"
+              continue
+            fi
+
+            PARTS_JSON=$(python3 - "$REPORT_DIR" "$MODEL_ID" << 'PYEOF'
+          import os, base64, json, sys
+
+          report_dir = sys.argv[1]
+          model_id   = sys.argv[2]
+
+          by_connection = {
+            "version": "4.0",
+            "datasetReference": {
+              "byConnection": {
+                "connectionString":          None,
+                "pbiServiceModelId":         None,
+                "pbiModelVirtualServerName": "sobe_wowvirtualserver",
+                "pbiModelDatabaseName":      model_id,
+                "name":                      "EntityDataSource",
+                "connectionType":            "pbiServiceXmlaStyleLive"
+              }
+            }
+          }
+
+          parts = []
+          for root, dirs, files in os.walk(report_dir):
+              dirs[:] = sorted([d for d in dirs if not d.startswith('.')])
+              for fname in sorted(files):
+                  if fname.startswith('.'): continue
+                  fpath    = os.path.join(root, fname)
+                  rel_path = os.path.relpath(fpath, report_dir).replace('\\', '/')
+
+                  if rel_path == 'definition.pbir':
+                      content = base64.b64encode(
+                          json.dumps(by_connection, indent=2).encode('utf-8')
+                      ).decode('utf-8')
+                      sys.stderr.write(f"  Patched: {rel_path} → byConnection (modelId={model_id})\n")
+                  else:
+                      with open(fpath, 'rb') as f:
+                          content = base64.b64encode(f.read()).decode('utf-8')
+                      sys.stderr.write(f"  Added:   {rel_path}\n")
+
+                  parts.append({"path": rel_path, "payload": content, "payloadType": "InlineBase64"})
+
+          print(json.dumps(parts))
+          PYEOF
+          )
+
+            EXISTING_REPORTS=$(curl -s \
+              "https://api.powerbi.com/v1.0/myorg/groups/$WORKSPACE_ID/reports" \
+              -H "Authorization: Bearer $ACCESS_TOKEN")
+
+            EXISTING_REPORT_ID=$(echo "$EXISTING_REPORTS" | python3 -c "
+          import sys,json
+          items = json.load(sys.stdin).get('value', [])
+          match = [i for i in items if i.get('name','') == '$R_NAME']
+          print(match[0]['id'] if match else '')
+          " 2>/dev/null)
+
+            if [ -n "$EXISTING_REPORT_ID" ]; then
+              echo "→ Updating existing report (ID: $EXISTING_REPORT_ID)"
+              PAYLOAD=$(echo "$PARTS_JSON" | python3 -c "
+          import json,sys; parts=json.loads(sys.stdin.read())
+          print(json.dumps({'definition': {'parts': parts}}))
+          ")
+              FULL_RESPONSE=$(curl -s -i -X POST \
+                "https://api.fabric.microsoft.com/v1/workspaces/$WORKSPACE_ID/reports/$EXISTING_REPORT_ID/updateDefinition" \
+                -H "Authorization: Bearer $ACCESS_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "$PAYLOAD")
+              REPORT_ID="$EXISTING_REPORT_ID"
+            else
+              echo "→ Creating new report with byConnection reference"
+              PAYLOAD=$(echo "$PARTS_JSON" | python3 -c "
+          import json,sys; parts=json.loads(sys.stdin.read())
+          print(json.dumps({
+              'displayName': '$R_NAME',
+              'definition': {'parts': parts}
+          }))
+          ")
+              FULL_RESPONSE=$(curl -s -i -X POST \
+                "https://api.fabric.microsoft.com/v1/workspaces/$WORKSPACE_ID/reports" \
+                -H "Authorization: Bearer $ACCESS_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "$PAYLOAD")
+            fi
+
+            HTTP_CODE=$(echo "$FULL_RESPONSE" | grep -i "^HTTP/" | tail -1 | awk '{print $2}')
+            OPERATION_URL=$(echo "$FULL_RESPONSE" | grep -i "^location:" | tail -1 | tr -d '\r' | awk '{print $2}')
+
+            echo "HTTP Status: $HTTP_CODE"
+            echo "Operation URL: $OPERATION_URL"
+
+            if [ "$HTTP_CODE" = "202" ] && [ -n "$OPERATION_URL" ]; then
+              echo "⏳ Polling operation..."
+              for i in $(seq 1 24); do
+                sleep 5
+                OP_RESPONSE=$(curl -s "$OPERATION_URL" \
+                  -H "Authorization: Bearer $ACCESS_TOKEN")
+                STATUS=$(echo "$OP_RESPONSE" | python3 -c "
+          import sys,json; d=json.load(sys.stdin)
+          print(d.get('status', 'unknown'))
+          " 2>/dev/null)
+                echo "   [$i] status=$STATUS"
+
+                if [ "$STATUS" = "Succeeded" ] || [ "$STATUS" = "succeeded" ]; then
+                  REPORT_ID=$(echo "$OP_RESPONSE" | python3 -c "
+          import sys,json; d=json.load(sys.stdin)
+          print(d.get('createdItemId', d.get('itemId', d.get('id', ''))))
+          " 2>/dev/null)
+                  echo "✅ Report created! ID: $REPORT_ID"
+                  echo "REPORT_ID=$REPORT_ID" >> $GITHUB_OUTPUT
+                  break
+                elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "failed" ]; then
+                  echo "❌ Operation failed: $OP_RESPONSE"
+                  exit 1
+                fi
+              done
+
+            elif [ "$HTTP_CODE" = "201" ]; then
+              BODY=$(echo "$FULL_RESPONSE" | tail -5)
+              REPORT_ID=$(echo "$BODY" | python3 -c "
+          import sys,json; d=json.load(sys.stdin); print(d.get('id',''))
+          " 2>/dev/null)
+              echo "✅ Report created synchronously (ID: $REPORT_ID)"
+              echo "REPORT_ID=$REPORT_ID" >> $GITHUB_OUTPUT
+
+            else
+              echo "❌ Unexpected HTTP $HTTP_CODE"
+              echo "$FULL_RESPONSE" | head -30
               exit 1
             fi
-          done
 
-          echo "❌ Timed out waiting for deployment"
-          exit 1
+          done <<< "${{ steps.find_pbip.outputs.PBIP_FILES }}"
 
-      - name: Summary
+      # ── Step 5: Rebind report to semantic model ───────────────────────────
+      - name: Rebind Report to Semantic Model
+        run: |
+          ACCESS_TOKEN="${{ steps.get_token.outputs.ACCESS_TOKEN }}"
+          WORKSPACE_ID="${{ secrets.PBI_PROD_WORKSPACE_ID }}"
+          MODEL_ID="${{ steps.deploy_model.outputs.MODEL_ID }}"
+          REPORT_ID="${{ steps.deploy_report.outputs.REPORT_ID }}"
+
+          if [ -z "$REPORT_ID" ]; then
+            echo "⚠️  No report ID — skipping rebind"
+            exit 0
+          fi
+
+          echo "🔗 Rebinding report $REPORT_ID → model $MODEL_ID"
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://api.powerbi.com/v1.0/myorg/groups/$WORKSPACE_ID/reports/$REPORT_ID/Rebind" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"datasetId\": \"$MODEL_ID\"}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "✅ Rebound successfully (HTTP $HTTP_CODE)"
+          else
+            echo "⚠️  Rebind HTTP $HTTP_CODE — $(echo "$RESPONSE" | head -1)"
+          fi
+
+      # ── Step 6: Summary ───────────────────────────────────────────────────
+      - name: Deployment summary
         if: success()
         run: |
-          echo "=========================================="
-          echo "  🎉  QA → Prod Promotion Complete"
-          echo "  PR  : ${{ github.event.pull_request.title }}"
-          echo "  By  : ${{ github.event.pull_request.merged_by.login }}"
-          echo "  URL : https://app.powerbi.com/groups/${{ secrets.PBI_PROD_WORKSPACE_ID }}"
-          echo "=========================================="
+          echo ""
+          echo "============================================"
+          echo "  ✅  Promoted to sales_prod"
+          echo "  PR     : ${{ github.event.pull_request.title }}"
+          echo "  Branch : ${{ github.ref_name }}"
+          echo "  Commit : ${{ github.sha }}"
+          echo "  By     : ${{ github.actor }}"
+          echo "  URL    : https://app.powerbi.com/groups/${{ secrets.PBI_PROD_WORKSPACE_ID }}/list"
+          echo "============================================"
